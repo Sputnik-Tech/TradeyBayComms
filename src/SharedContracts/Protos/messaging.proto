@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package messaging;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+import "common.proto"; // Import common types
+
+option csharp_namespace = "TradeyBay.Messaging.Grpc";
+
+service Messaging {
+    // Initiates or gets an existing chat (esp. for 1:1 based on context)
+    rpc GetOrCreateChat(GetOrCreateChatRequest) returns (ChatInfo);
+
+    // Sends a message to a chat
+    rpc SendMessage(SendMessageRequest) returns (Message);
+
+    // Client subscribes to receive messages for their chats
+    rpc SubscribeToMessages(SubscribeRequest) returns (stream Message);
+
+    // Gets historical messages for a chat
+    rpc GetChatHistory(GetChatHistoryRequest) returns (GetChatHistoryResponse);
+
+    // Creates a SAS token for uploading media
+    rpc GetMediaUploadUrl(GetMediaUploadUrlRequest) returns (GetMediaUploadUrlResponse);
+
+     // System message injection (called by other backend services potentially)
+    rpc InjectSystemMessage(InjectSystemMessageRequest) returns (google.protobuf.Empty);
+    // Add other methods like CreateGroupChat, AddUserToGroup etc. if needed
+}
+
+message ChatInfo {
+    string chat_id = 1;
+    string chat_type = 2; // "OneToOne", "Group"
+    common.ContextInfo context = 3; // Optional context like listing ID
+    repeated common.UserIdentifier participants = 4;
+    string group_name = 5; // If group chat
+}
+
+message Message {
+    string message_id = 1;
+    string chat_id = 2;
+    common.UserIdentifier sender = 3;
+    string content = 4; // Text content or description for media/system
+    google.protobuf.Timestamp timestamp = 5;
+    common.MessageType message_type = 6;
+    common.MediaInfo media_info = 7; // If message_type is MEDIA
+    // Add read status etc. if needed
+}
+
+message GetOrCreateChatRequest {
+    common.ContextInfo context = 1; // e.g., Listing ID to find chat about it
+    repeated common.UserIdentifier initial_participants = 2; // Usually buyer + seller for 1:1
+}
+
+message SendMessageRequest {
+    string chat_id = 1;
+    string client_message_id = 2; // Optional: Client-generated ID for idempotency
+    string content = 3;
+    common.MessageType message_type = 4;
+    common.MediaInfo media_info = 5; // For MEDIA type
+    // Sender ID is implicitly taken from authenticated context
+}
+
+message SubscribeRequest {
+    // No parameters needed initially, user identified by token
+    // Could add parameters for specific filtering if needed later
+}
+
+message GetChatHistoryRequest {
+    string chat_id = 1;
+    int32 page_size = 2;
+    string continuation_token = 3; // For pagination
+}
+
+message GetChatHistoryResponse {
+    repeated Message messages = 1;
+    string next_continuation_token = 2;
+}
+
+ message GetMediaUploadUrlRequest {
+    string file_name = 1;
+    string mime_type = 2;
+    int64 size_bytes = 3;
+    string chat_id = 4; // Optional: context for upload permissions
+}
+
+message GetMediaUploadUrlResponse {
+    string upload_url = 1; // SAS URI
+    string blob_name = 2; // The final name/path in blob storage
+    string media_url = 3; // The URL clients will use to view/download
+}
+
+message InjectSystemMessageRequest {
+     string chat_id = 1;
+     string content = 2;
+     // Maybe add more system-specific fields
+}

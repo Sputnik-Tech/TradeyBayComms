@@ -1,0 +1,36 @@
+# Ignore build results
+[Bb]in/
+[Oo]bj/
+
+# Visual Studio specific files
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.cache
+*.csproj.user
+
+# Rider project files
+.idea/
+
+# VS Code files (optional, if you have workspace settings locally)
+.vscode/
+
+# NuGet packages
+*.nupkg
+# The packages folder can be ignored if you restore packages on build
+packages/
+
+# App-specific generated files
+project.assets.json
+project.nuget.cache
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+
+# OS generated files
+.DS_Store
+Thumbs.db

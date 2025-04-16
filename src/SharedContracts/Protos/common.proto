@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package common;
+
+import "google/protobuf/timestamp.proto";
+
+message UserIdentifier {
+    string user_id = 1; // Corresponds to Azure AD B2C object ID
+}
+
+message ContextInfo {
+    string listing_id = 1;
+    // Add other context types if needed
+}
+
+enum MessageType {
+    TEXT = 0;
+    MEDIA = 1;
+    SYSTEM = 2;
+    CALL_LOG = 3; // To represent call events in chat history
+}
+
+message MediaInfo {
+    string media_url = 1; // URL to Azure Blob Storage
+    string file_name = 2;
+    string mime_type = 3;
+    int64 size_bytes = 4;
+}
