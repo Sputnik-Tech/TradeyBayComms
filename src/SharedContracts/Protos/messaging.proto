@@ -4,12 +4,13 @@ package messaging;
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
-import "common.proto"; // Import common types
+import "common.proto"; // Make sure this contains UserIdentifier, ContextInfo, MessageType, MediaInfo
 
 option csharp_namespace = "TradeyBay.Messaging.Grpc";
 
+// Service Definition
 service Messaging {
-    // Initiates or gets an existing chat (esp. for 1:1 based on context)
+    // Initiates or gets an existing 1:1 chat based on context (e.g., Ad Listing)
     rpc GetOrCreateChat(GetOrCreateChatRequest) returns (ChatInfo);
 
     // Sends a message to a chat
@@ -21,78 +22,88 @@ service Messaging {
     // Gets historical messages for a chat
     rpc GetChatHistory(GetChatHistoryRequest) returns (GetChatHistoryResponse);
 
-    // Creates a SAS token for uploading media
+    // Gets a SAS URL for uploading media associated with a chat/message
     rpc GetMediaUploadUrl(GetMediaUploadUrlRequest) returns (GetMediaUploadUrlResponse);
 
-     // System message injection (called by other backend services potentially)
+     // Optional: For backend services to inject system messages
     rpc InjectSystemMessage(InjectSystemMessageRequest) returns (google.protobuf.Empty);
-    // Add other methods like CreateGroupChat, AddUserToGroup etc. if needed
+}
+
+// Message Definitions
+
+// Represents the sender identity for a message
+message SenderInfo {
+    common.UserIdentifier user = 1;         // The actual user sending the message (B2C OID)
+    optional string acting_as_business_id = 2; // ID of the business the user is representing (if any)
 }
 
 message ChatInfo {
     string chat_id = 1;
-    string chat_type = 2; // "OneToOne", "Group"
-    common.ContextInfo context = 3; // Optional context like listing ID
-    repeated common.UserIdentifier participants = 4;
-    string group_name = 5; // If group chat
+    // ChatType is implicitly "OneToOne"
+    common.ContextInfo context = 2;             // Context like Listing ID
+    repeated common.UserIdentifier participants = 3; // The two participants (buyer, seller)
+    // Removed group_name
 }
 
 message Message {
     string message_id = 1;
     string chat_id = 2;
-    common.UserIdentifier sender = 3;
-    string content = 4; // Text content or description for media/system
+    SenderInfo sender_info = 3;                 // Who sent it and as whom
+    string content = 4;
     google.protobuf.Timestamp timestamp = 5;
     common.MessageType message_type = 6;
-    common.MediaInfo media_info = 7; // If message_type is MEDIA
-    // Add read status etc. if needed
+    common.MediaInfo media_info = 7;            // If message_type is MEDIA
 }
 
 message GetOrCreateChatRequest {
-    common.ContextInfo context = 1; // e.g., Listing ID to find chat about it
-    repeated common.UserIdentifier initial_participants = 2; // Usually buyer + seller for 1:1
+    common.ContextInfo context = 1;             // Must include Listing ID
+    // Participants are derived from context (buyer = authenticated user, seller = from Ads service via Listing ID)
+    // Removed initial_participants
 }
 
 message SendMessageRequest {
     string chat_id = 1;
-    string client_message_id = 2; // Optional: Client-generated ID for idempotency
+    string client_message_id = 2;               // Optional: Client-generated ID for idempotency
     string content = 3;
     common.MessageType message_type = 4;
-    common.MediaInfo media_info = 5; // For MEDIA type
-    // Sender ID is implicitly taken from authenticated context
+    common.MediaInfo media_info = 5;            // Include if message_type is MEDIA
+    optional string acting_as_business_id = 6;  // Specified by the sender (if they are the seller and own the business)
+    // Sender user ID is taken from authenticated context
 }
 
 message SubscribeRequest {
-    // No parameters needed initially, user identified by token
-    // Could add parameters for specific filtering if needed later
+    // User identified by token. Could add timestamp for "sync since" later.
 }
 
 message GetChatHistoryRequest {
     string chat_id = 1;
     int32 page_size = 2;
-    string continuation_token = 3; // For pagination
+    string before_message_id = 3; // Use message ID or timestamp for cursor pagination
+    // string continuation_token = 3; // Alternative pagination style
 }
 
 message GetChatHistoryResponse {
     repeated Message messages = 1;
-    string next_continuation_token = 2;
+    bool has_more_messages = 2; // Indicate if more messages are available
+    // string next_continuation_token = 2;
 }
 
  message GetMediaUploadUrlRequest {
     string file_name = 1;
     string mime_type = 2;
     int64 size_bytes = 3;
-    string chat_id = 4; // Optional: context for upload permissions
+    string chat_id = 4; // Context for permission check & blob path structure
 }
 
 message GetMediaUploadUrlResponse {
     string upload_url = 1; // SAS URI
-    string blob_name = 2; // The final name/path in blob storage
-    string media_url = 3; // The URL clients will use to view/download
+    string blob_name = 2;
+    string media_url = 3; // Final download URL
 }
 
 message InjectSystemMessageRequest {
      string chat_id = 1;
      string content = 2;
-     // Maybe add more system-specific fields
+     common.MessageType message_type = 3; // Should likely be SYSTEM
+     // Add specific system event details if needed
 }
