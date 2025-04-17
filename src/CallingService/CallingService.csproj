@@ -11,6 +11,8 @@
 
     <Protobuf Include="..\SharedContracts\Protos\common.proto" GrpcServices="None" Link="Protos\common.proto" />
     <Protobuf Include="..\SharedContracts\Protos\calling.proto" GrpcServices="Server" Link="Protos\calling.proto" />
+    <Protobuf Include="..\SharedContracts\Protos\auth.proto" GrpcServices="None" Link="Protos\auth.proto" />
+    <Protobuf Include="..\SharedContracts\Protos\standardads.proto" GrpcServices="Server" Link="Protos\standardads.proto" />
     <Protobuf Include="google/protobuf/timestamp.proto" Link="google/protobuf/timestamp.proto" />
     <Protobuf Include="google/protobuf/wrappers.proto" Link="google/protobuf/wrappers.proto" />
   </ItemGroup>

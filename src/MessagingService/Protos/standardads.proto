@@ -1,0 +1,241 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+package tradeybay.standardads;
+
+option csharp_namespace = "TradeyBay.StandardAds";
+
+// --- Message Definitions ---
+
+// Represents a price suggestion for an ad.
+message PriceSuggestion {
+  string id = 1;
+  int32 buyerId = 2;
+  double suggestedPrice = 3;
+  google.protobuf.Timestamp suggestedAt = 4;
+  bool isAccepted = 5;
+  string buyerFullName = 6;
+  string buyerEmail = 7;
+  string buyerPhone = 8;
+}
+
+// Represents a Standard Ad.
+message StandardAd {
+  string id = 1;
+  repeated string imageUrls = 2;
+  string adName = 3;
+  double adPrice = 4;
+  string adDescription = 5;
+  int32 sellerId = 6;
+  string sellerFullName = 7;
+  double sellerRating = 8;
+  string sellerEmail = 9;
+  string sellerPhone = 10;
+  string sellerType = 11; // "User" or "Business"
+  bool hasDiscount = 12;
+  bool isPremium = 13;
+  google.protobuf.Timestamp publishedDate = 14;
+  int32 viewsCount = 15;
+  bool isLiked = 16;
+  bool isViewed = 17;
+  repeated PriceSuggestion priceSuggestions = 18;
+  string status = 19;
+  string buyerId = 20;
+  int32 categoryId = 21;
+  int32 subCategoryId = 22;
+  double latitude = 23;
+  double longitude = 24;
+  string formattedAddress = 25;
+}
+
+message DistanceCalculationRequest {
+  double startLatitude = 1;
+  double startLongitude = 2;
+  double endLatitude = 3;
+  double endLongitude = 4;
+}
+
+// Represents the response for a distance calculation.
+message DistanceResponse {
+  // For example, distance in kilometers.
+  double distance = 1;
+  // You can add additional fields if needed (e.g., duration, etc.)
+}
+
+// Represents the combined response for ads near a user.
+message AdsNearUserResponse {
+  repeated StandardAd ads = 1;
+  repeated DistanceResponse distances = 2;
+}
+
+// Request message for creating an ad.
+message CreateAdRequest {
+  string adName = 1;
+  double adPrice = 2;
+  string adDescription = 3;
+  bool isPremium = 4;
+  int32 categoryId = 5;
+  int32 subCategoryId = 6;
+  // For images, you might send URLs or handle image upload separately.
+  repeated string imageUrls = 7;
+  double latitude = 8;
+  double longitude = 9;
+  string formattedAddress = 10;
+  // Posting type flag and business SellerId (if posting as business).
+  bool isBusinessPosting = 11;
+  int32 sellerId = 12; // For business postings, this is the business id.
+}
+
+// Request message for updating an ad.
+message UpdateAdRequest {
+  string id = 1;
+  string adName = 2;
+  double adPrice = 3;
+  string adDescription = 4;
+  bool isPremium = 5;
+  int32 viewsCount = 6;
+  bool isLiked = 7;
+  bool isViewed = 8;
+  string status = 9;
+  int32 categoryId = 10;
+  int32 subCategoryId = 11;
+  // New fields for image update flexibility:
+  repeated string imagesToRemove = 12;
+  repeated string newImageUrls = 13;
+  double latitude = 14;
+  double longitude = 15;
+  string formattedAddress = 16;
+}
+
+// Request message for updating ad location.
+message UpdateAdLocationRequest {
+  string adId = 1;
+  double latitude = 2;
+  double longitude = 3;
+  string formattedAddress = 4;
+}
+
+message UpdateAdLocationByAddressRequest {
+  string adId = 1;
+  string address = 2;
+}
+
+// Request message for calculating distance for an ad.
+message CalculateDistanceForAdRequest {
+  string adId = 1;
+}
+
+// Request message for paginated queries.
+message PaginationRequest {
+  int32 page = 1;
+  int32 pageSize = 2;
+}
+
+message ListPremiumAdsRequest {
+  // Optional limit on the number of ads to return
+  google.protobuf.Int32Value limit = 1;
+}
+
+// Response message for listing ads.
+message ListAdsResponse {
+  repeated StandardAd ads = 1;
+}
+
+// Request for suggesting a price.
+message SuggestPriceRequest {
+  string adId = 1;
+  PriceSuggestion suggestion = 2;
+}
+
+// Request for accepting or rejecting a suggestion.
+message UpdateSuggestionRequest {
+  string adId = 1;
+  string suggestionId = 2;
+}
+
+// Request for buying an ad.
+message BuyAdRequest {
+  string adId = 1;
+  string buyerId = 2;
+}
+
+// Empty message
+message Empty {}
+
+// You can define additional messages like DiscountRequest as needed.
+message DiscountRequest {
+  string adId = 1;
+  double discountPercentage = 2;
+}
+
+// --- Service Definition ---
+
+service StandardAdService {
+  // Create a new ad.
+  rpc CreateAd(CreateAdRequest) returns (StandardAd);
+
+  // Get an ad by id.
+  rpc GetAdById(google.protobuf.StringValue) returns (StandardAd);
+
+  // Update an ad.
+  rpc UpdateAd(UpdateAdRequest) returns (Empty);
+
+  // Delete an ad.
+  rpc DeleteAd(google.protobuf.StringValue) returns (Empty);
+
+  // List all ads.
+  rpc ListAds(Empty) returns (ListAdsResponse);
+
+  // List recommended ads (paginated).
+  rpc ListRecommendedAds(PaginationRequest) returns (ListAdsResponse);
+
+  // List newest ads (paginated).
+  rpc ListNewestAds(PaginationRequest) returns (ListAdsResponse);
+
+  // List premium ads (optionally limited).
+  rpc ListPremiumAds(ListPremiumAdsRequest) returns (ListAdsResponse);
+
+  // List ads near a user (paginated) with distance calculations.
+  rpc ListAdsNearUser(PaginationRequest) returns (AdsNearUserResponse);
+
+  // List ads owned by the calling user (personal + owned business ads).
+  rpc ListMyAds(PaginationRequest) returns (ListAdsResponse);
+
+  // Update ad location.
+  rpc UpdateAdLocation(UpdateAdLocationRequest) returns (StandardAd);
+
+  // New RPC method for updating location using an address.
+  rpc UpdateAdLocationByAddress(UpdateAdLocationByAddressRequest) returns (StandardAd);
+
+  // Calculate the distance between the current user and the ad location.
+  rpc CalculateDistanceForAd(CalculateDistanceForAdRequest) returns (DistanceResponse);
+
+  // Archive an ad.
+  rpc ArchiveAd(google.protobuf.StringValue) returns (Empty);
+
+  // Unarchive an ad.
+  rpc UnarchiveAd(google.protobuf.StringValue) returns (Empty);
+
+  // List Archive Ads
+  // rpc ListMyArchivedAds(PaginationRequest) returns (ListAdsResponse);
+
+  // Buy an ad.
+  //rpc BuyAd(BuyAdRequest) returns (Empty);
+
+
+  // Set discount on an ad.
+  rpc SetDiscount(DiscountRequest) returns (Empty);
+
+  // Suggest a price for an ad.
+  rpc SuggestPrice(SuggestPriceRequest) returns (Empty);
+
+  // Accept a price suggestion.
+  rpc AcceptSuggestion(UpdateSuggestionRequest) returns (Empty);
+
+  // Reject a price suggestion.
+  rpc RejectSuggestion(UpdateSuggestionRequest) returns (Empty);
+}
+
+

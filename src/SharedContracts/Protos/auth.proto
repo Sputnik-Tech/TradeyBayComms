@@ -1,0 +1,220 @@
+syntax = "proto3";
+
+option csharp_namespace = "TradeyBay.Auth";
+
+package tradeybay.auth;
+
+//
+// Messages for User Profile
+//
+message Empty {}
+
+message GetUserProfileRequest {
+  int32 id = 1;
+}
+
+message GetOrCreateAccountRequest {
+  // Include the necessary fields from token claims.
+  string email = 1;
+  string phoneNumber = 2;
+  string givenName = 3;
+  string surname = 4;
+  string displayName = 5;
+}
+
+message GetOrCreateAccountResponse {
+  UserProfile userProfile = 1;
+  string status = 2; // e.g., "uncompleted_profile" or "completed_profile"
+  string message = 3;
+}
+
+message UpdateUserProfileRequest {
+  UserProfile userProfile = 1;
+}
+
+message UpdateUserProfileResponse {
+  UserProfile userProfile = 1;
+}
+
+message UpdateUserLocationRequest {
+  // We assume that the new location data comes from the Location service.
+  double latitude = 1;
+  double longitude = 2;
+  string formattedAddress = 3;
+}
+
+message UpdateUserLocationResponse {
+  UserProfile userProfile = 1;
+}
+
+//
+// User Profile definition used across requests/responses
+//
+message UserProfile {
+  int32 id = 1;
+  string name = 2;
+  string surname = 3;
+  string email = 4;
+  string phoneNumber = 5;
+  string dateOfBirth = 6; // ISO 8601 format, for example.
+  string gender = 7;
+  int32 countryCode = 8;
+  double latitude = 9;
+  double longitude = 10;
+  string formattedAddress = 11;
+  double averageRating = 12;
+  int32 ratingCount = 13;
+}
+
+//
+// Messages for Business Profile
+//
+message RegisterBusinessRequest {
+  int32 userProfileId = 1;  // The owner’s user profile ID.
+  string businessName = 2;
+  string businessEmailAddress = 3;
+  string businessPhoneNumber = 4;
+  string businessWebsite = 5;
+  string businessAddress = 6;
+  string country = 7;
+  string businessTypeOrCategory = 8;
+  string businessTaxId = 9;
+}
+
+message RegisterBusinessResponse {
+  BusinessProfile businessProfile = 1;
+}
+
+message GetBusinessRequest {
+  int32 id = 1;
+}
+
+message GetBusinessResponse {
+  BusinessProfile businessProfile = 1;
+}
+
+message UpdateBusinessRequest {
+  BusinessProfile businessProfile = 1;
+}
+
+message UpdateBusinessResponse {
+  BusinessProfile businessProfile = 1;
+}
+
+message DeleteBusinessRequest {
+  int32 id = 1;
+}
+
+message DeleteBusinessResponse {
+  bool success = 1;
+}
+
+message UpdateBusinessLocationRequest {
+  int32 businessId = 1;
+  double latitude = 2;
+  double longitude = 3;
+  string formattedAddress = 4;
+}
+
+message UpdateBusinessLocationResponse {
+  BusinessProfile businessProfile = 1;
+}
+
+// New messages for fetching businesses by user.
+message GetBusinessesByUserRequest {
+  int32 userProfileId = 1;
+}
+
+message GetBusinessesByUserResponse {
+  repeated BusinessProfile businesses = 1;
+}
+
+//
+// Business Profile definition
+//
+message BusinessProfile {
+  int32 id = 1;
+  int32 userProfileId = 2;
+  string businessName = 3;
+  string businessEmailAddress = 4;
+  string businessPhoneNumber = 5;
+  string businessWebsite = 6;
+  string businessAddress = 7;
+  string country = 8;
+  string businessTypeOrCategory = 9;
+  string businessTaxId = 10;
+  double latitude = 11;
+  double longitude = 12;
+  string formattedAddress = 13;
+  double averageRating = 14;
+  int32 ratingCount = 15;
+}
+
+//
+// Messages for Ratings
+//
+message RateRequest {
+  int32 raterUserProfileId = 1;
+  // One of these must be specified:
+  int32 rateeUserProfileId = 2; // optional
+  int32 businessProfileId = 3;  // optional
+  int32 ratingValue = 4;
+  string comment = 5;
+  int32 transactionId = 6;      // optional
+}
+
+message RateResponse {
+  bool success = 1;
+}
+
+message GetRatingRequest {
+  int32 id = 1;
+}
+
+message Rating {
+  int32 id = 1;
+  int32 raterUserProfileId = 2;
+  int32 rateeUserProfileId = 3;
+  int32 businessProfileId = 4;
+  int32 ratingValue = 5;
+  string comment = 6;
+  string createdAt = 7;
+  string updatedAt = 8;
+}
+
+message GetRatingResponse {
+  Rating rating = 1;
+}
+
+message GetAllRatingsResponse {
+  repeated Rating ratings = 1;
+}
+
+//
+// Service definitions
+//
+
+// Service for User Profile operations.
+service UserProfileService {
+  rpc GetUserProfile(GetUserProfileRequest) returns (UserProfile);
+  rpc GetOrCreateAccount(GetOrCreateAccountRequest) returns (GetOrCreateAccountResponse);
+  rpc UpdateUserProfile(UpdateUserProfileRequest) returns (UpdateUserProfileResponse);
+  rpc UpdateUserLocation(UpdateUserLocationRequest) returns (UpdateUserLocationResponse);
+}
+
+// Service for Business operations.
+service BusinessService {
+  rpc RegisterBusiness(RegisterBusinessRequest) returns (RegisterBusinessResponse);
+  rpc GetBusiness(GetBusinessRequest) returns (GetBusinessResponse);
+  rpc GetBusinessesByUser(GetBusinessesByUserRequest) returns (GetBusinessesByUserResponse); // NEW
+  rpc UpdateBusiness(UpdateBusinessRequest) returns (UpdateBusinessResponse);
+  rpc DeleteBusiness(DeleteBusinessRequest) returns (DeleteBusinessResponse);
+  rpc UpdateBusinessLocation(UpdateBusinessLocationRequest) returns (UpdateBusinessLocationResponse);
+}
+
+// Service for Rating operations.
+service RatingService {
+  rpc Rate(RateRequest) returns (RateResponse);
+  rpc GetRating(GetRatingRequest) returns (GetRatingResponse);
+  rpc GetAllRatings(Empty) returns (GetAllRatingsResponse);
+}

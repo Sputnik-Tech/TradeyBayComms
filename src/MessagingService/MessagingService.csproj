@@ -8,9 +8,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SharedContracts\SharedContracts.csproj" GrpcServices="None" />
-
-    <Protobuf Include="..\SharedContracts\Protos\common.proto" GrpcServices="None" Link="Protos\common.proto" />
-     <Protobuf Include="..\SharedContracts\Protos\messaging.proto" GrpcServices="Server" Link="Protos\messaging.proto" />
+    <Protobuf Include="Protos/messaging.proto" GrpcServices="Server"  />
+    <Protobuf Include="Protos/auth.proto" GrpcServices="Client"  />
+    <Protobuf Include="Protos/standardads.proto" GrpcServices="Client"  />
      <Protobuf Include="google/protobuf/timestamp.proto" Link="google/protobuf/timestamp.proto" />
       <Protobuf Include="google/protobuf/wrappers.proto" Link="google/protobuf/wrappers.proto" />
   </ItemGroup>
