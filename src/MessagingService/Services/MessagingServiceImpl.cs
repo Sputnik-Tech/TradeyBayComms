@@ -318,3 +318,693 @@
 //         return tcs.Task;
 //     }
 // } */
+
+
+
+// using Grpc.Core;
+// using Microsoft.AspNetCore.Authorization;
+// using Microsoft.EntityFrameworkCore;
+// using Microsoft.Extensions.Logging;
+// using System;
+// using System.Collections.Generic;
+// using System.Linq;
+// using System.Security.Claims;
+// using System.Threading.Tasks;
+// using Google.Protobuf.WellKnownTypes; // For Empty and Timestamp
+// using MessagingService.Data;
+// using MessagingService.Interfaces;
+// using MessagingService.Services;
+// using TradeyBay.Messaging.Grpc; // Your proto namespace for Messaging
+// using TradeyBay.Auth;          // Your proto namespace for Auth
+// // Remove duplicate using statement for TradeyBay.StandardAds if present
+// using TradeyBay.StandardAds;    // Your proto namespace for StandardAds (already referenced via IStandardAdsGrpcClient)
+
+// namespace MessagingService.Services // Or your preferred namespace
+// {
+//     [Authorize] // Require authentication for all methods by default
+//     public class MessagingServiceImpl : Messaging.MessagingBase // Inherit from the generated base class
+//     {
+//         private readonly MessagingDbContext _dbContext;
+//         private readonly ILogger<MessagingServiceImpl> _logger;
+//         private readonly IHttpContextAccessor _httpContextAccessor;
+//         private readonly IAuthUserProfileGrpcClient _authProfileClient;
+//         private readonly IStandardAdsGrpcClient _standardAdsClient;
+//         private readonly IConnectionManager _connectionManager;
+//         private readonly IBlobStorageService _blobStorageService;
+//         // private readonly AuthUserProfileMapper _userProfileMapper; // If you have it
+
+//         // Inject necessary dependencies
+//         public MessagingServiceImpl(
+//             MessagingDbContext dbContext,
+//             ILogger<MessagingServiceImpl> logger,
+//             IHttpContextAccessor httpContextAccessor,
+//             IAuthUserProfileGrpcClient authProfileClient,
+//             IStandardAdsGrpcClient standardAdsClient,
+//             IConnectionManager connectionManager,
+//             IBlobStorageService blobStorageService
+//             /* AuthUserProfileMapper userProfileMapper */)
+//         {
+//             _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
+//             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+//             _httpContextAccessor = httpContextAccessor ?? throw new ArgumentNullException(nameof(httpContextAccessor));
+//             _authProfileClient = authProfileClient ?? throw new ArgumentNullException(nameof(authProfileClient));
+//             _standardAdsClient = standardAdsClient ?? throw new ArgumentNullException(nameof(standardAdsClient));
+//             _connectionManager = connectionManager ?? throw new ArgumentNullException(nameof(connectionManager));
+//             _blobStorageService = blobStorageService ?? throw new ArgumentNullException(nameof(blobStorageService));
+//             // _userProfileMapper = userProfileMapper ?? throw new ArgumentNullException(nameof(userProfileMapper));
+//         }
+
+//         // Helper to get the current user's B2C Object ID (OID)
+//         private string GetCurrentUserId()
+//         {
+//             // Adjust the claim type if necessary based on your B2C configuration (oid or sub)
+//             var userIdClaim = _httpContextAccessor.HttpContext?.User?.FindFirstValue(ClaimTypes.NameIdentifier) // Common claim for object ID
+//                 ?? _httpContextAccessor.HttpContext?.User?.FindFirstValue("oid"); // Another common claim name
+
+//             if (string.IsNullOrEmpty(userIdClaim))
+//             {
+//                 _logger.LogWarning("Could not find User ID claim (NameIdentifier or oid) in the current HttpContext.");
+//                 throw new RpcException(new Status(StatusCode.Unauthenticated, "User ID claim not found."));
+//             }
+//             return userIdClaim;
+//         }
+
+//         /// <summary>
+//         /// Initiates or retrieves an existing 1:1 chat based on a listing ID.
+//         /// Ensures the chat involves the current user and the ad seller.
+//         /// </summary>
+//         public override async Task<ChatInfo> GetOrCreateChat(GetOrCreateChatRequest request, ServerCallContext context)
+//         {
+//             if (request.Context == null || request.Context.ListingId <= 0) // Assuming ListingId is int; adjust if string Guid etc.
+//             {
+//                 throw new RpcException(new Status(StatusCode.InvalidArgument, "Valid ListingId must be provided in the context."));
+//             }
+
+//             var listingIdString = request.Context.ListingId.ToString(); // Convert int ListingId to string for Ad Service Client
+//             var currentUserId = GetCurrentUserId(); // Buyer's B2C OID
+
+//             _logger.LogInformation("GetOrCreateChat called for ListingId: {ListingId} by User: {UserId}", listingIdString, currentUserId);
+
+//             try
+//             {
+//                 // 1. Get Ad details to find the seller
+//                 var adDetails = await _standardAdsClient.GetAdByIdAsync(listingIdString, context.CancellationToken);
+//                 if (adDetails == null)
+//                 {
+//                     throw new RpcException(new Status(StatusCode.NotFound, $"Ad with ListingId '{listingIdString}' not found."));
+//                 }
+
+//                 // Check if the current user is the seller - cannot chat with oneself about their own ad
+//                 if (adDetails.SellerId.ToString() == currentUserId) // Assuming SellerId in Ad is the Auth *internal* ID. We need the OID.
+//                 {
+//                     // This comparison needs adjustment. SellerId is int, currentUserId is string (B2C OID)
+//                     // We need to fetch the Seller's profile first.
+//                     // throw new RpcException(new Status(StatusCode.InvalidArgument, "Cannot initiate a chat about your own listing."));
+//                      _logger.LogWarning("Attempted to initiate chat for own listing {ListingId} by user {UserId}", listingIdString, currentUserId);
+//                      // Decide if this should be an error or handled differently. Returning an error seems reasonable.
+//                      throw new RpcException(new Status(StatusCode.InvalidArgument, "Cannot initiate a chat about your own listing."));
+
+//                 }
+
+//                 // 2. Get Seller's User Profile from Auth Service using the internal SellerId from the Ad
+//                 var sellerProfileRequest = new GetUserProfileRequest { Id = adDetails.SellerId };
+//                 var sellerProfileProto = await _authProfileClient.GetUserProfileAsync(sellerProfileRequest, context.CancellationToken);
+
+//                 if (sellerProfileProto == null || string.IsNullOrEmpty(sellerProfileProto.Email)) // Check a required field like email or phone to guess OID presence indirectly
+//                 {
+//                      // It seems GetUserProfile doesn't return the OID directly based on the proto.
+//                      // This is a PROBLEM. We NEED the seller's B2C OID to create the ChatParticipant.
+//                      // Possible Solutions:
+//                      //    a) Modify Auth Service: GetUserProfileResponse should include the B2C OID (e.g., add a string field `b2c_object_id`). **<- PREFERRED**
+//                      //    b) Modify Auth Service: Add a new RPC `GetUserB2cOid(GetUserProfileRequest)` that returns just the OID.
+//                      //    c) Workaround (less ideal): Use Seller's Email/Phone from sellerProfileProto to call GetOrCreateAccount? This assumes email/phone are unique identifiers used for linking B2C.
+//                      _logger.LogError("Could not retrieve Seller's B2C OID for internal SellerId {SellerId} from Auth Service. Cannot create chat.", adDetails.SellerId);
+//                      throw new RpcException(new Status(StatusCode.Internal, "Failed to retrieve necessary seller information to initiate chat. Auth service might need update to provide B2C OID."));
+//                 }
+
+//                  // **** TEMPORARY ASSUMPTION/PLACEHOLDER ****
+//                  // Assume sellerProfileProto *does* have the OID, maybe in a field named 'B2cObjectId' (adjust field name).
+//                  // string sellerB2cOid = sellerProfileProto.B2cObjectId;
+//                  // If not, you MUST implement one of the solutions above.
+//                  // Let's proceed *assuming* we got the seller's OID somehow, maybe via email lookup as a fallback demo:
+//                  _logger.LogWarning("Attempting fallback: Using Seller Email ({SellerEmail}) to find B2C OID via GetOrCreateAccount.", sellerProfileProto.Email);
+//                  string sellerB2cOid;
+//                  try {
+//                     var findSellerReq = new GetOrCreateAccountRequest { Email = sellerProfileProto.Email, PhoneNumber = sellerProfileProto.PhoneNumber ?? "" }; // Need accurate data
+//                     var findSellerResp = await _authProfileClient.GetOrCreateAccountAsync(findSellerReq, context.CancellationToken);
+//                     // We need the OID from the UserProfile within findSellerResp
+//                     // Again, the UserProfile proto doesn't explicitly show the OID. This design needs fixing in Auth service.
+//                     // Let's *pretend* the ID returned here IS the OID for the demo. THIS IS WRONG.
+//                     // sellerB2cOid = findSellerResp.UserProfile.Id.ToString(); // WRONG MAPPING - ID is internal ID
+//                     // You MUST fix the Auth service to return the B2C OID.
+//                     // For now, using a placeholder.
+//                      sellerB2cOid = $"seller-oid-for-internal-{adDetails.SellerId}"; // <<<<<---- Placeholder - MUST BE FIXED
+//                      _logger.LogInformation("Retrieved Seller B2C OID (Placeholder): {SellerOid} for internal ID {InternalSellerId}", sellerB2cOid, adDetails.SellerId);
+
+//                  } catch (Exception findEx) {
+//                     _logger.LogError(findEx, "Failed fallback attempt to get seller OID via GetOrCreateAccount using email {SellerEmail}", sellerProfileProto.Email);
+//                     throw new RpcException(new Status(StatusCode.Internal, "Failed to resolve seller identity for chat creation."));
+//                  }
+//                  // **** END TEMPORARY ASSUMPTION ****
+
+//                  // Now we have buyer OID (currentUserId) and seller OID (sellerB2cOid)
+
+//                 // 3. Check if chat already exists between these two users for this listing
+//                 var existingChat = await _dbContext.Chats
+//                     .Include(c => c.Participants)
+//                     .Where(c => c.ListingId == listingIdString)
+//                     // Check if the chat has exactly two participants AND both required IDs are present
+//                     .Where(c => c.Participants.Count == 2 &&
+//                                 c.Participants.Any(p => p.UserId == currentUserId) &&
+//                                 c.Participants.Any(p => p.UserId == sellerB2cOid))
+//                     .Select(c => new { c.ChatId, ParticipantUserIds = c.Participants.Select(p => p.UserId).ToList() }) // Select only needed data
+//                     .FirstOrDefaultAsync(context.CancellationToken);
+
+//                 if (existingChat != null)
+//                 {
+//                     _logger.LogInformation("Found existing ChatId: {ChatId} for ListingId: {ListingId}", existingChat.ChatId, listingIdString);
+//                     return new ChatInfo
+//                     {
+//                         ChatId = existingChat.ChatId.ToString(),
+//                         Context = request.Context, // Return original context
+//                         Participants = { existingChat.ParticipantUserIds.Select(id => new UserIdentifier { UserId = ParseUserIdToInt(id) }) } // Map string OIDs back to UserIdentifier (int user_id) -> This mapping is likely incorrect based on proto! user_id should be int.
+//                         // The UserIdentifier proto uses int32 user_id. This seems inconsistent with using B2C OID (string) everywhere else.
+//                         // Let's assume UserIdentifier.user_id *should* have been string b2c_oid = 1;
+//                         // Reverting to placeholder mapping. Fix the proto or the logic.
+//                         // Participants = { new UserIdentifier { UserId = 0 /* Map buyer OID? */ }, new UserIdentifier { UserId = 0 /* Map seller OID? */ } } // Placeholder!
+//                     };
+//                 }
+
+//                 // 4. Create new chat if not found
+//                 _logger.LogInformation("Creating new chat for ListingId: {ListingId} between Buyer: {BuyerId} and Seller: {SellerId}", listingIdString, currentUserId, sellerB2cOid);
+
+//                 var newChat = new Chat
+//                 {
+//                     ListingId = listingIdString,
+//                     CreatedAt = DateTime.UtcNow
+//                 };
+
+//                 var buyerParticipant = new ChatParticipant
+//                 {
+//                     Chat = newChat,
+//                     UserId = currentUserId, // Buyer's B2C OID
+//                     JoinedAt = DateTime.UtcNow
+//                 };
+
+//                 var sellerParticipant = new ChatParticipant
+//                 {
+//                     Chat = newChat,
+//                     UserId = sellerB2cOid, // Seller's B2C OID (fetched via Auth)
+//                     JoinedAt = DateTime.UtcNow
+//                 };
+
+//                 _dbContext.Chats.Add(newChat);
+//                 _dbContext.ChatParticipants.AddRange(buyerParticipant, sellerParticipant);
+
+//                 await _dbContext.SaveChangesAsync(context.CancellationToken);
+//                 _logger.LogInformation("Created new ChatId: {ChatId}", newChat.ChatId);
+
+//                 // Map ChatParticipants back to UserIdentifiers (assuming UserIdentifier.user_id maps to B2C OID string)
+//                 // Again, the proto UserIdentifier uses int32 user_id. This mapping needs clarification.
+//                 var participantsProto = new List<UserIdentifier> {
+//                     // new UserIdentifier { UserId = ParseUserIdToInt(buyerParticipant.UserId) }, // Placeholder conversion
+//                     // new UserIdentifier { UserId = ParseUserIdToInt(sellerParticipant.UserId) }  // Placeholder conversion
+//                 };
+
+
+//                 return new ChatInfo
+//                 {
+//                     ChatId = newChat.ChatId.ToString(),
+//                     Context = request.Context,
+//                     Participants = { participantsProto } // Add the correctly mapped participants
+//                 };
+//             }
+//             catch (RpcException) // Re-throw specific gRPC errors
+//             {
+//                 throw;
+//             }
+//             catch (Exception ex)
+//             {
+//                 _logger.LogError(ex, "Error in GetOrCreateChat for ListingId: {ListingId}", listingIdString);
+//                 throw new RpcException(new Status(StatusCode.Internal, $"An internal error occurred: {ex.Message}"));
+//             }
+//         }
+
+//         // Helper to attempt parsing B2C OID (string) to int (likely wrong based on proto)
+//         private int ParseUserIdToInt(string userId) {
+//              _logger.LogWarning("Parsing UserId ('{UserId}') to int for UserIdentifier proto - this mapping is likely incorrect and needs review based on Auth service's ID strategy vs B2C OID.", userId);
+//              // Attempt a basic parse or return 0/hash code as placeholder.
+//              if (int.TryParse(userId, out int result)) return result;
+//              // Maybe use hash code if it must be an int? Highly discouraged.
+//              // return userId.GetHashCode();
+//              return 0; // Indicate failure or placeholder
+//         }
+
+
+//         /// <summary>
+//         /// Sends a message to a specified chat. Validates participation and broadcasts to recipients.
+//         /// </summary>
+//         public override async Task<Message> SendMessage(SendMessageRequest request, ServerCallContext context)
+//         {
+//             if (!Guid.TryParse(request.ChatId, out var chatIdGuid))
+//             {
+//                 throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid ChatId format. Must be a GUID."));
+//             }
+//             if (string.IsNullOrEmpty(request.Content) && request.MessageType == MessageType.Text)
+//             {
+//                  throw new RpcException(new Status(StatusCode.InvalidArgument, "Content cannot be empty for TEXT messages."));
+//             }
+//              if (request.MessageType == MessageType.Media && (request.MediaInfo == null || string.IsNullOrEmpty(request.MediaInfo.MediaUrl)))
+//             {
+//                  throw new RpcException(new Status(StatusCode.InvalidArgument, "MediaInfo with MediaUrl must be provided for MEDIA messages."));
+//             }
+
+
+//             var currentUserId = GetCurrentUserId();
+//             _logger.LogInformation("SendMessage called for ChatId: {ChatId} by User: {UserId}", request.ChatId, currentUserId);
+
+//             try
+//             {
+//                 // 1. Validate participant
+//                 var isParticipant = await _dbContext.ChatParticipants
+//                     .AnyAsync(cp => cp.ChatId == chatIdGuid && cp.UserId == currentUserId, context.CancellationToken);
+
+//                 if (!isParticipant)
+//                 {
+//                     _logger.LogWarning("User {UserId} attempted to send message to ChatId {ChatId} but is not a participant.", currentUserId, request.ChatId);
+//                     throw new RpcException(new Status(StatusCode.PermissionDenied, "You are not a participant in this chat."));
+//                 }
+
+//                 // 2. Create and Save the Message
+//                 var dbMessage = new ChatMessage
+//                 {
+//                     ChatId = chatIdGuid,
+//                     SenderUserId = currentUserId, // B2C OID
+//                     SenderActingAsBusinessId = request.ActingAsBusinessId, // Optional Business ID
+//                     Content = request.Content,
+//                     MessageType = MapProtoMessageTypeToDb(request.MessageType), // Map enum
+//                     Timestamp = DateTime.UtcNow,
+//                     MediaUrl = request.MediaInfo?.MediaUrl,
+//                     MediaFileName = request.MediaInfo?.FileName,
+//                     MediaMimeType = request.MediaInfo?.MimeType,
+//                     MediaSizeBytes = request.MediaInfo?.SizeBytes
+//                 };
+
+//                 _dbContext.Messages.Add(dbMessage);
+//                 await _dbContext.SaveChangesAsync(context.CancellationToken);
+
+//                 _logger.LogInformation("Message {MessageId} saved for ChatId {ChatId}", dbMessage.MessageId, request.ChatId);
+
+//                 // 3. Map DB message to Proto message
+//                 var protoMessage = MapDbMessageToProto(dbMessage);
+
+//                 // 4. Broadcast to other participants via ConnectionManager
+//                 var recipientIds = await _dbContext.ChatParticipants
+//                     .Where(cp => cp.ChatId == chatIdGuid /*&& cp.UserId != currentUserId*/) // Broadcast to ALL participants including sender for consistency? Or exclude sender? Let's include sender for now.
+//                     .Select(cp => cp.UserId)
+//                     .ToListAsync(context.CancellationToken);
+
+//                 if (recipientIds.Any())
+//                 {
+//                     _logger.LogDebug("Broadcasting message {MessageId} to recipients: {RecipientIds}", protoMessage.MessageId, string.Join(",", recipientIds));
+//                     await _connectionManager.BroadcastMessageAsync(protoMessage, recipientIds);
+//                 }
+
+//                 // 5. Return the sent message confirmation
+//                 return protoMessage;
+
+//             }
+//             catch (RpcException)
+//             {
+//                 throw;
+//             }
+//             catch (Exception ex)
+//             {
+//                 _logger.LogError(ex, "Error in SendMessage for ChatId: {ChatId}", request.ChatId);
+//                 throw new RpcException(new Status(StatusCode.Internal, $"An internal error occurred while sending message: {ex.Message}"));
+//             }
+//         }
+
+//         /// <summary>
+//         /// Establishes a server stream for a client to receive real-time messages.
+//         /// </summary>
+//         public override async Task SubscribeToMessages(SubscribeRequest request, IServerStreamWriter<Message> responseStream, ServerCallContext context)
+//         {
+//             var userId = GetCurrentUserId();
+//             _logger.LogInformation("User {UserId} subscribing to messages.", userId);
+
+//             _connectionManager.Subscribe(userId, responseStream);
+
+//             try
+//             {
+//                 // Keep the connection open until the client disconnects or cancellation is requested
+//                 await context.CancellationToken.WaitHandle.WaitOneAsync(context.CancellationToken);
+//                  _logger.LogDebug("WaitHandle released for user {UserId}.", userId);
+
+//             }
+//             catch (OperationCanceledException) {
+//                  _logger.LogInformation("Subscription cancelled for User {UserId}.", userId);
+//             }
+//             catch (Exception ex)
+//             {
+//                 _logger.LogError(ex, "Error during message subscription for User {UserId}.", userId);
+//                 // Optionally re-throw or just ensure cleanup happens
+//             }
+//             finally
+//             {
+//                 _connectionManager.Unsubscribe(userId);
+//                 _logger.LogInformation("User {UserId} unsubscribed from messages.", userId);
+//             }
+//         }
+
+//         /// <summary>
+//         /// Retrieves historical messages for a chat with pagination.
+//         /// </summary>
+//         public override async Task<GetChatHistoryResponse> GetChatHistory(GetChatHistoryRequest request, ServerCallContext context)
+//         {
+//             if (!Guid.TryParse(request.ChatId, out var chatIdGuid))
+//             {
+//                 throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid ChatId format. Must be a GUID."));
+//             }
+
+//             var currentUserId = GetCurrentUserId();
+//             int pageSize = request.PageSize > 0 && request.PageSize <= 100 ? request.PageSize : 50; // Default and max page size
+
+//             _logger.LogInformation("GetChatHistory called for ChatId: {ChatId} by User: {UserId}, PageSize: {PageSize}, BeforeMessageId: {BeforeMessageId}",
+//                 request.ChatId, currentUserId, pageSize, request.BeforeMessageId);
+
+//             try
+//             {
+//                 // 1. Validate participant
+//                 var isParticipant = await _dbContext.ChatParticipants
+//                     .AnyAsync(cp => cp.ChatId == chatIdGuid && cp.UserId == currentUserId, context.CancellationToken);
+
+//                 if (!isParticipant)
+//                 {
+//                     _logger.LogWarning("User {UserId} attempted to get history for ChatId {ChatId} but is not a participant.", currentUserId, request.ChatId);
+//                     throw new RpcException(new Status(StatusCode.PermissionDenied, "You are not a participant in this chat."));
+//                 }
+
+//                 // 2. Build Query
+//                 var query = _dbContext.Messages
+//                     .Where(m => m.ChatId == chatIdGuid)
+//                     .OrderByDescending(m => m.Timestamp) // Newest first
+//                     .ThenByDescending(m => m.MessageId); // Secondary sort for consistent pagination if timestamps are identical
+
+//                 // 3. Apply Pagination (Cursor-based)
+//                 if (!string.IsNullOrEmpty(request.BeforeMessageId) && Guid.TryParse(request.BeforeMessageId, out var beforeMessageGuid))
+//                 {
+//                     // Find the timestamp of the cursor message
+//                     var cursorTimestamp = await _dbContext.Messages
+//                         .Where(m => m.MessageId == beforeMessageGuid)
+//                         .Select(m => m.Timestamp)
+//                         .FirstOrDefaultAsync(context.CancellationToken);
+
+//                     if (cursorTimestamp != default)
+//                     {
+//                          _logger.LogDebug("Paginating history for ChatId {ChatId} before Timestamp: {CursorTimestamp}", request.ChatId, cursorTimestamp);
+//                         query = query.Where(m => m.Timestamp < cursorTimestamp); // Get messages older than the cursor
+//                     } else {
+//                          _logger.LogWarning("BeforeMessageId {BeforeMessageId} not found for ChatId {ChatId}. Ignoring cursor.", request.BeforeMessageId, request.ChatId);
+//                     }
+//                 }
+
+//                 // Fetch one extra message to determine if there are more pages
+//                 var dbMessages = await query
+//                     .Take(pageSize + 1)
+//                     .ToListAsync(context.CancellationToken);
+
+//                 // 4. Determine if more messages exist
+//                 bool hasMoreMessages = dbMessages.Count > pageSize;
+//                 var messagesToSend = dbMessages.Take(pageSize).ToList(); // Get only the requested page size
+
+//                  _logger.LogDebug("Retrieved {MessageCount} messages for ChatId {ChatId}. HasMoreMessages: {HasMore}", messagesToSend.Count, request.ChatId, hasMoreMessages);
+
+
+//                 // 5. Map to Proto response
+//                 var response = new GetChatHistoryResponse
+//                 {
+//                     HasMoreMessages = hasMoreMessages
+//                 };
+//                 response.Messages.AddRange(messagesToSend.Select(MapDbMessageToProto)); // Map each message
+
+//                 return response;
+//             }
+//             catch (RpcException)
+//             {
+//                 throw;
+//             }
+//             catch (Exception ex)
+//             {
+//                  _logger.LogError(ex, "Error in GetChatHistory for ChatId: {ChatId}", request.ChatId);
+//                 throw new RpcException(new Status(StatusCode.Internal, $"An internal error occurred while getting chat history: {ex.Message}"));
+//             }
+//         }
+
+//         /// <summary>
+//         /// Generates a SAS URL for uploading media to Azure Blob Storage.
+//         /// </summary>
+//         public override async Task<GetMediaUploadUrlResponse> GetMediaUploadUrl(GetMediaUploadUrlRequest request, ServerCallContext context)
+//         {
+//              if (!Guid.TryParse(request.ChatId, out var chatIdGuid))
+//             {
+//                 throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid ChatId format. Must be a GUID."));
+//             }
+//             if (string.IsNullOrWhiteSpace(request.FileName) || string.IsNullOrWhiteSpace(request.MimeType))
+//             {
+//                 throw new RpcException(new Status(StatusCode.InvalidArgument, "FileName and MimeType are required."));
+//             }
+
+//             var currentUserId = GetCurrentUserId();
+//              _logger.LogInformation("GetMediaUploadUrl called for ChatId: {ChatId} by User: {UserId}, FileName: {FileName}",
+//                 request.ChatId, currentUserId, request.FileName);
+
+//             try
+//             {
+//                 // 1. Validate participant (optional but good practice)
+//                  var isParticipant = await _dbContext.ChatParticipants
+//                     .AnyAsync(cp => cp.ChatId == chatIdGuid && cp.UserId == currentUserId, context.CancellationToken);
+//                  if (!isParticipant) {
+//                      _logger.LogWarning("User {UserId} attempted to get upload URL for ChatId {ChatId} but is not a participant.", currentUserId, request.ChatId);
+//                      throw new RpcException(new Status(StatusCode.PermissionDenied, "You are not a participant in this chat."));
+//                  }
+
+
+//                 // 2. Generate Blob Name (ensure uniqueness and organization)
+//                 var uniqueFileName = $"{Guid.NewGuid()}-{request.FileName}";
+//                 // Structure: chat/{chatId}/user/{userId}/{uniqueFileName}
+//                 var blobName = $"chat/{request.ChatId}/user/{currentUserId}/{uniqueFileName}";
+
+//                 // 3. Get SAS URI from Blob Service
+//                 var expiration = TimeSpan.FromMinutes(15); // Make SAS URL short-lived
+//                 var sasUri = await _blobStorageService.GetUploadSasUriAsync(blobName, expiration);
+
+//                 // 4. Get the final permanent URL for the blob (to be stored in message)
+//                 var permanentMediaUrl = _blobStorageService.GetDownloadUrl(blobName);
+
+//                 _logger.LogDebug("Generated SAS Upload URL for Blob: {BlobName}", blobName);
+
+//                 return new GetMediaUploadUrlResponse
+//                 {
+//                     UploadUrl = sasUri.ToString(),
+//                     BlobName = blobName,
+//                     MediaUrl = permanentMediaUrl
+//                 };
+//             }
+//              catch (RpcException)
+//             {
+//                 throw;
+//             }
+//             catch (InvalidOperationException ioex) // Catch specific errors from BlobStorageService
+//             {
+//                  _logger.LogError(ioex, "Configuration or permission error generating SAS URL for ChatId: {ChatId}", request.ChatId);
+//                 throw new RpcException(new Status(StatusCode.FailedPrecondition, $"Failed to generate upload URL: {ioex.Message}"));
+//             }
+//             catch (Exception ex)
+//             {
+//                  _logger.LogError(ex, "Error in GetMediaUploadUrl for ChatId: {ChatId}", request.ChatId);
+//                 throw new RpcException(new Status(StatusCode.Internal, $"An internal error occurred while getting upload URL: {ex.Message}"));
+//             }
+//         }
+
+//         /// <summary>
+//         /// Allows authorized internal services to inject system messages into a chat.
+//         /// NOTE: Authorization needs careful consideration here. Currently allows any authenticated user.
+//         /// Consider adding a specific policy or role requirement if exposed externally,
+//         /// or rely on internal network trust if called service-to-service.
+//         /// </summary>
+//         // [Authorize(Policy = "InternalServiceOnly")] // Example: Add a specific policy if needed
+//         public override async Task<Empty> InjectSystemMessage(InjectSystemMessageRequest request, ServerCallContext context)
+//         {
+//             if (!Guid.TryParse(request.ChatId, out var chatIdGuid))
+//             {
+//                 throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid ChatId format. Must be a GUID."));
+//             }
+//             if (string.IsNullOrWhiteSpace(request.Content))
+//             {
+//                  throw new RpcException(new Status(StatusCode.InvalidArgument, "Content cannot be empty for system messages."));
+//             }
+//              // Validate MessageType is appropriate for system injection
+//              if (request.MessageType != MessageType.System && request.MessageType != MessageType.CallLog)
+//             {
+//                 throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid MessageType for system injection. Must be SYSTEM or CALL_LOG."));
+//             }
+
+//             _logger.LogInformation("InjectSystemMessage called for ChatId: {ChatId}, Type: {MessageType}", request.ChatId, request.MessageType);
+//             // TODO: Add robust authorization check here if necessary.
+
+//             try
+//             {
+//                 // 1. Find the chat (to ensure it exists) and its participants
+//                  var chatExists = await _dbContext.Chats.AnyAsync(c => c.ChatId == chatIdGuid, context.CancellationToken);
+//                  if (!chatExists) {
+//                      _logger.LogWarning("InjectSystemMessage failed: ChatId {ChatId} not found.", request.ChatId);
+//                      throw new RpcException(new Status(StatusCode.NotFound, $"Chat with ID '{request.ChatId}' not found."));
+//                  }
+
+
+//                 // 2. Create and Save the System Message
+//                  const string systemSenderId = "SYSTEM"; // Define a constant identifier for system messages
+//                  var dbMessage = new ChatMessage
+//                  {
+//                     ChatId = chatIdGuid,
+//                     SenderUserId = systemSenderId, // Use system identifier
+//                     Content = request.Content,
+//                     MessageType = MapProtoMessageTypeToDb(request.MessageType),
+//                     Timestamp = DateTime.UtcNow
+//                  };
+
+//                 _dbContext.Messages.Add(dbMessage);
+//                 await _dbContext.SaveChangesAsync(context.CancellationToken);
+
+//                  _logger.LogInformation("System message {MessageId} injected into ChatId {ChatId}", dbMessage.MessageId, request.ChatId);
+
+//                 // 3. Map and Broadcast
+//                 var protoMessage = MapDbMessageToProto(dbMessage);
+
+//                 var recipientIds = await _dbContext.ChatParticipants
+//                     .Where(cp => cp.ChatId == chatIdGuid)
+//                     .Select(cp => cp.UserId)
+//                     .ToListAsync(context.CancellationToken);
+
+//                  if (recipientIds.Any())
+//                  {
+//                      _logger.LogDebug("Broadcasting system message {MessageId} to recipients: {RecipientIds}", protoMessage.MessageId, string.Join(",", recipientIds));
+//                     await _connectionManager.BroadcastMessageAsync(protoMessage, recipientIds);
+//                  }
+
+//                  return new Empty();
+//             }
+//             catch (RpcException)
+//             {
+//                 throw;
+//             }
+//             catch (Exception ex)
+//             {
+//                  _logger.LogError(ex, "Error in InjectSystemMessage for ChatId: {ChatId}", request.ChatId);
+//                 throw new RpcException(new Status(StatusCode.Internal, $"An internal error occurred while injecting system message: {ex.Message}"));
+//             }
+//         }
+
+//         // --- Helper Mappers ---
+
+//         private Message MapDbMessageToProto(ChatMessage dbMessage)
+//         {
+//             if (dbMessage == null) return null;
+
+//             var protoMessage = new Message
+//             {
+//                 MessageId = dbMessage.MessageId.ToString(),
+//                 ChatId = dbMessage.ChatId.ToString(),
+//                 Content = dbMessage.Content ?? "",
+//                 Timestamp = Timestamp.FromDateTime(dbMessage.Timestamp.ToUniversalTime()),
+//                 MessageType = MapDbMessageTypeToProto(dbMessage.MessageType),
+//                 SenderInfo = new SenderInfo
+//                 {
+//                     // User = new UserIdentifier { UserId = ParseUserIdToInt(dbMessage.SenderUserId) }, // Map B2C OID (string) to UserIdentifier (int) -> Needs review!
+//                     User = new UserIdentifier { UserId = 0 }, // Placeholder - Fix UserIdentifier proto or logic
+//                     ActingAsBusinessId = dbMessage.SenderActingAsBusinessId ?? "" // Handle null
+//                 }
+//             };
+//              // Set SenderInfo.User correctly based on how UserIdentifier should store the ID (int or string OID)
+
+//             if (dbMessage.MessageType == DbMessageType.MEDIA)
+//             {
+//                 protoMessage.MediaInfo = new MediaInfo
+//                 {
+//                     MediaUrl = dbMessage.MediaUrl ?? "",
+//                     FileName = dbMessage.MediaFileName ?? "",
+//                     MimeType = dbMessage.MediaMimeType ?? "",
+//                     SizeBytes = dbMessage.MediaSizeBytes ?? 0
+//                 };
+//             }
+
+//             return protoMessage;
+//         }
+
+//         private DbMessageType MapProtoMessageTypeToDb(MessageType protoType)
+//         {
+//             return protoType switch
+//             {
+//                 MessageType.Text => DbMessageType.TEXT,
+//                 MessageType.Media => DbMessageType.MEDIA,
+//                 MessageType.System => DbMessageType.SYSTEM,
+//                 MessageType.CallLog => DbMessageType.CALL_LOG,
+//                 _ => throw new ArgumentOutOfRangeException(nameof(protoType), $"Unsupported message type: {protoType}")
+//             };
+//         }
+
+//         private MessageType MapDbMessageTypeToProto(DbMessageType dbType)
+//         {
+//              return dbType switch
+//             {
+//                 DbMessageType.TEXT => MessageType.Text,
+//                 DbMessageType.MEDIA => MessageType.Media,
+//                 DbMessageType.SYSTEM => MessageType.System,
+//                 DbMessageType.CALL_LOG => MessageType.CallLog,
+//                 _ => MessageType.Text // Or throw? Defaulting to Text might hide errors.
+//             };
+//         }
+//     }
+
+//      // Helper Extension for async WaitHandle waiting with CancellationToken
+//     internal static class WaitHandleExtensions
+//     {
+//         public static Task WaitOneAsync(this WaitHandle waitHandle, CancellationToken cancellationToken)
+//         {
+//             if (waitHandle == null)
+//                 throw new ArgumentNullException(nameof(waitHandle));
+
+//             var tcs = new TaskCompletionSource<bool>();
+
+//             var registration = ThreadPool.RegisterWaitForSingleObject(
+//                 waitHandle,
+//                 (state, timedOut) =>
+//                 {
+//                     var localTcs = (TaskCompletionSource<bool>)state;
+//                     if (timedOut) {
+//                          localTcs.TrySetCanceled(); // Consider setting Canceled if timeout occurs (though WaitOne doesn't naturally timeout here)
+//                     } else {
+//                         localTcs.TrySetResult(true);
+//                     }
+
+//                 },
+//                 tcs,
+//                 Timeout.InfiniteTimeSpan, // Wait indefinitely until signaled or cancelled
+//                 true); // Execute callback once
+
+//             // Clean up registration when task completes or is cancelled
+//             tcs.Task.ContinueWith((_, state) => ((RegisteredWaitHandle)state).Unregister(null), registration, TaskScheduler.Default);
+
+
+//              // Handle cancellation from the ServerCallContext
+//             if (cancellationToken.CanBeCanceled) {
+//                  var cancelReg = cancellationToken.Register(() => tcs.TrySetCanceled(cancellationToken));
+//                  tcs.Task.ContinueWith((_, state) => ((CancellationTokenRegistration)state).Dispose(), cancelReg, TaskScheduler.Default);
+//             }
+
+
+//             return tcs.Task;
+//         }
+//     }
+// }
